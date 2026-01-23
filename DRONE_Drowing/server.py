@@ -27,7 +27,7 @@ socketio = SocketIO(app,
 
 # Create/connect controller
 try:
-    controller = get_controller(connection_str='/dev/ttyACM0', takeoff_height=4)
+    controller = get_controller(connection_str='/dev/ttyACM0', takeoff_height=3)
     print("✅ Drone controller initialized")
 except Exception as e:
     print(f"❌ Failed to initialize drone controller: {e}")
@@ -498,7 +498,7 @@ def run_mission_in_thread(waypoints):
         try:
             socketio.emit('mission_status', {'status': 'starting', 'waypoints': waypoints})
             if controller:
-                controller.fly_and_precision_land_with_waypoints(waypoints, takeoff_height=4)          
+                controller.fly_and_precision_land_with_waypoints(waypoints, takeoff_height=3)          
                 socketio.emit('mission_status', {'status': 'completed'})
         except Exception as e:
             socketio.emit('mission_status', {'status': 'error', 'error': str(e)})

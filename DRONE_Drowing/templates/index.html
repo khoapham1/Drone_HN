@@ -427,7 +427,6 @@
 </header>
 
 <div class="main-container">
-    <!-- CAMERA + MAP -->
     <div class="row">
         <div class="card left-camera">
             <div class="section-title">Live Camera Feed</div>
@@ -459,41 +458,6 @@
             </div>
         </div>
     </div>
-
-    <!-- MAIN CONTROLS -->
-    <div class="card" style="margin-top: 16px;">
-        <div class="section-title">Flight Controls</div>
-        <div class="controls-grid" id="control-buttons">
-            <button id="arm">Arm Drone</button>
-            <button id="takeoff">Takeoff</button>
-            <button id="land" class="danger-btn">Land</button>
-            <button id="guided">GUIDED Mode</button>
-            <button id="return-home">Return Home</button>
-            <button id="clear-points" class="warning-btn">Clear Points</button>
-            <button id="fly-selected" style="background: #8b5cf6; border-color: #7c3aed;">Fly Selected Points</button>
-            
-            <button id="start-person-detection" class="success-btn">Start Detection</button>
-            <button id="stop-person-detection">Stop Detection</button>
-            <button id="clear-detections">Clear Detections</button>
-            
-            <button id="start-record" class="success-btn">Start Recording</button>
-            <button id="stop-record" class="danger-btn" disabled>Stop Recording</button>
-            <button id="view-recordings">View Recordings</button>
-
-            <select id="speed-select">
-                <option value="0.5">0.5 m/s</option>
-                <option value="0.7" selected>0.7 m/s</option>
-                <option value="1.0">1.0 m/s</option>
-                <option value="1.5">1.5 m/s</option>
-                <option value="2.0">2.0 m/s</option>
-            </select>
-            <button id="set-speed">Set Speed</button>
-        </div>
-        <div id="point-info">Selected Points: None</div>
-        <div id="detection-info">No person detections yet</div>
-    </div>
-
-    <!-- TELEMETRY & STATUS -->
     <div style="margin-top: 16px;">
         <div class="info-panel">
             <div class="info-item">
@@ -548,6 +512,38 @@
                 <span id="selected-points-count">0</span>
             </div>
         </div>
+    </div>
+    <!-- MAIN CONTROLS -->
+    <div class="card" style="margin-top: 16px;">
+        <div class="section-title">Flight Controls</div>
+        <div class="controls-grid" id="control-buttons">
+            <button id="arm">Arm Drone</button>
+            <button id="takeoff">Takeoff</button>
+            <button id="land" class="danger-btn">Land</button>
+            <button id="guided">GUIDED Mode</button>
+            <button id="return-home">Return Home</button>
+            <button id="clear-points" class="warning-btn">Clear Points</button>
+            <button id="fly-selected" style="background: #8b5cf6; border-color: #7c3aed;">Fly Selected Points</button>
+            
+            <button id="start-person-detection" class="success-btn">Start Detection</button>
+            <button id="stop-person-detection">Stop Detection</button>
+            <button id="clear-detections">Clear Detections</button>
+            
+            <button id="start-record" class="success-btn">Start Recording</button>
+            <button id="stop-record" class="danger-btn" disabled>Stop Recording</button>
+            <button id="view-recordings">View Recordings</button>
+
+            <select id="speed-select">
+                <option value="0.5">0.5 m/s</option>
+                <option value="0.7" selected>0.7 m/s</option>
+                <option value="1.0">1.0 m/s</option>
+                <option value="1.5">1.5 m/s</option>
+                <option value="2.0">2.0 m/s</option>
+            </select>
+            <button id="set-speed">Set Speed</button>
+        </div>
+        <div id="point-info">Selected Points: None</div>
+        <div id="detection-info">No person detections yet</div>
     </div>
 </div>
 

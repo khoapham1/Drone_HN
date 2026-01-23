@@ -10,9 +10,23 @@ import requests
 from PID_controller import PIDController
 from person_detector import PersonDetector
 
+
+# ===================== CAMERA CALIBRATION =====================
+try:
+    CAMERA_MATRIX = np.load("camera_matrix_logitech.npy")
+    DIST_COEFF = np.load("dist_coeff_logitech.npy")
+    USE_UNDISTORT = True
+    print("✅ Loaded camera calibration matrices")
+except Exception as e:
+    CAMERA_MATRIX = None
+    DIST_COEFF = None
+    USE_UNDISTORT = False
+    print("⚠️ Camera calibration not loaded:", e)
+_undistort_map1 = None
+_undistort_map2 = None
 # ===================== CAMERA SETUP =====================
-horizontal_res = 1280
-vertical_res = 720
+horizontal_res = 640
+vertical_res = 480
 
 _latest_frame_lock = threading.Lock()
 _latest_frame_jpeg = None
@@ -48,9 +62,9 @@ def start_camera(camera_index=0):
         print("❌ Failed to start USB camera:", e)
 
 def _camera_loop():
-    """Continuously capture frames"""
     global _latest_frame_jpeg, _latest_frame_lock
     global _camera_running, _usb_cam
+    global _undistort_map1, _undistort_map2
 
     while _camera_running and _usb_cam:
         try:
@@ -59,6 +73,35 @@ def _camera_loop():
                 time.sleep(0.05)
                 continue
 
+            # ---------- UNDISTORT ----------
+            global _undistort_map1, _undistort_map2
+
+            if USE_UNDISTORT and CAMERA_MATRIX is not None:
+                if _undistort_map1 is None:
+                    h, w = frame.shape[:2]
+                    new_camera_mtx, roi = cv2.getOptimalNewCameraMatrix(
+                        CAMERA_MATRIX,
+                        DIST_COEFF,
+                        (w, h),
+                        alpha=0  # 0 = crop, 1 = keep full FOV
+                    )
+
+                    _undistort_map1, _undistort_map2 = cv2.initUndistortRectifyMap(
+                        CAMERA_MATRIX,
+                        DIST_COEFF,
+                        None,
+                        new_camera_mtx,
+                        (w, h),
+                        cv2.CV_16SC2
+                    )
+                    print("✅ Undistort map initialized")
+
+                frame = cv2.remap(
+                    frame,
+                    _undistort_map1,
+                    _undistort_map2,
+                    interpolation=cv2.INTER_LINEAR
+                )
             # Encode JPEG
             ret, jpeg = cv2.imencode(
                 '.jpg',
@@ -450,7 +493,12 @@ class DroneController:
 
         print("✅ Drone is armed and ready")
         return True
-
+        # ---------------- GOTO / WAYPOINTS ----------------
+    def get_distance_meters(self, targetLocation, currentLocation):
+        dLat = targetLocation.lat - currentLocation.lat
+        dLon = targetLocation.lon - currentLocation.lon
+        return math.sqrt((dLon * dLon) + (dLat * dLat)) * 1.113195e5
+    
     def goto(self, targetLocation, tolerance=0.6, timeout=60, speed=0.7):
         """
         simple_goto với tolerance & timeout nới lỏng, có record vị trí.
@@ -472,48 +520,7 @@ class DroneController:
         start_dist = distanceToTargetLocation
         start_time = time.time()
 
-        #pause-aware timeout
-        pause_accum = 0.0
-        pause_start = None
-        hold_sent = False
-
-        while self.vehicle.mode.name == "GUIDED" and time.time():
-
-            now = time.time()
-            elapsed = now - start_time - pause_accum
-            if pause_start is not None:
-                elapsed -= (now - pause_start)
-            if elapsed > timeout:
-                break
-
-            #==== pause heading =====
-            if self._is_pausings():
-                if pause_start is None:
-                    pause_start = now
-                    hold_sent = False
-                    print(f"[PAUSE] Holding position for {self._pause_remaining():.1f}s (reason={self._pause_reason})")
-                if not hold_sent:
-                    self._hold_position_once()
-                    hold_sent = True
-                try:
-                    #UAV dung lai
-                    self.send_local_ned_velocity(0, 0, 0)
-                except Exception:
-                    pass
-                time.sleep(0.1)
-                continue
-            else:
-                if pause_start is not None:
-                    pause_accum += (now - pause_start)
-                    pause_start = None
-                    hold_sent = False
-                    print("[PAUSES] Resume mission")
-                    try:
-                        self.set_speed(speed)
-                        self.vehicle.simple_goto(targetLocation, groundspeed=speed)
-                    except Exception:
-                        pass
-
+        while self.vehicle.mode.name == "GUIDED" and time.time() - start_time < timeout:
             currentDistance = self.get_distance_meters(
                 targetLocation,
                 self.vehicle.location.global_relative_frame
@@ -526,12 +533,10 @@ class DroneController:
         print("Timeout reaching waypoint, proceeding anyway")
         return False
 
-
     def land(self):
         """Land the drone"""
         if not self.vehicle:
             return
-        
         self.vehicle.mode = VehicleMode("LAND")
         while self.vehicle.armed:
             print("Landing...")
@@ -587,10 +592,7 @@ class DroneController:
         self.stop_person_detection()
 
         print("Starting landing phase...")
-        self.vehicle.mode = VehicleMode("LAND")
-        while self.vehicle.mode.name != "LAND":
-            print("Waiting for LAND mode...")
-            time.sleep(1)
+        self.land()
 
         while self.vehicle.armed:
             print("Waiting for disarming...")
