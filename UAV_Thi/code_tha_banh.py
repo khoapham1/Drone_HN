@@ -19,12 +19,7 @@ HOLD_TIME = 5          # Giữ 2 giây
 ERROR_THRESH = 60      # deadzone (pixel)
 VISION_TIMEOUT = 10.0     # mất vision quá lâu → LAND
 DEBUG_MODE = True         # Bật chế độ debug
-servo_triggered = {
-    1: False,
-    3: False,
-    5: False
-}
-
+servo_triggered = False  # global
 
 # ==== COMPASS =====
 TARGET_COMPASS_HEADING = 13
@@ -42,6 +37,13 @@ hold_start_time = 0
 in_target_zone = False
 vehicle = None
 
+# ================= BIẾN KIỂM SOÁT DI CHUYỂN =================
+moving_active = False  # Đang trong quá trình di chuyển
+moving_start_time = 0
+moving_direction = ""
+moving_speed = 0.5
+move_target_color = None  # Màu sắc mission hiện tại cần detect
+
 # ================= CONTROL FUNCTIONS =================
 def arm_and_takeoff(target_altitude):
     print("Basic pre-arm checks")
@@ -54,9 +56,9 @@ def arm_and_takeoff(target_altitude):
     while not vehicle.armed:
         print(" Waiting for arming...")
         time.sleep(1)
-    time.sleep(1)
+
     print("Taking off!")
-    vehicle.simple_takeoff(target_altitude)
+    # vehicle.simple_takeoff(target_altitude)
 
     while True:
         current_altitude = vehicle.rangefinder.distance
@@ -73,23 +75,21 @@ def land():
         print(" Waiting for landing...")
         time.sleep(1)
     print("Landed and disarmed.")
-    
+
 def send_local_ned_velocity(vx, vy, vz=0):
     msg = vehicle.message_factory.set_position_target_local_ned_encode(
         0,
         vehicle._master.target_system,
-        vehicle._master.target_component,     
-        mavutil.mavlink.MAV_FRAME_LOCAL_FRD,
+        vehicle._master.target_component,
+        mavutil.mavlink.MAV_FRAME_BODY_NED,
         0b0000111111000111,                  
         0, 0, 0,
-        vx, vy, vz,
+        vx, vy, vz,  # FIX: Đảo dấu vx để forward đúng hướng
         0, 0, 0,
         0, 0
     )
     vehicle.send_mavlink(msg)
     vehicle.flush()
-
-
 
 def condition_yaw(heading, relative=False):
     """
@@ -162,77 +162,50 @@ def xoay_compass(target_heading=TARGET_COMPASS_HEADING):
     condition_yaw(vehicle.heading, relative=False)
     print("[COMPASS] Compass rotation completed")
 
-def move_with_timer(direction, duration, speed=0.5):
-    """Di chuyển theo hướng trong thời gian nhất định"""
-    vx, vy = 0, 0
-    if direction.lower() == 'forward':
-        vx = speed
-    elif direction.lower() == 'backward':
-        vx = -speed
-    elif direction.lower() == 'left':
-        vy = -speed
-    elif direction.lower() == 'right':
-        vy = speed
-    else:
-        print(f"Unknown direction: {direction}")
-        return
+def start_moving(direction, speed=0.5, target_color=None):
+    """Bắt đầu di chuyển với khả năng dừng sớm khi phát hiện target_color"""
+    global moving_active, moving_start_time, moving_direction, moving_speed, move_target_color
     
-    print(f"[MOVE] Moving {direction} for {duration}s at {speed}m/s")
-    
-    start_time = time.time()
-    while time.time() - start_time < duration:
-        send_local_ned_velocity(vx, vy, vz=0)
-        time.sleep(0.05)
-    
-    # Dừng lại sau khi hoàn thành
+    moving_active = True
+    moving_start_time = time.time()
+    moving_direction = direction
+    moving_speed = speed
+    move_target_color = target_color
+    print(f"[MOVE] Started {direction} movement, will stop on {target_color} detection")
+
+def stop_moving():
+    """Dừng di chuyển"""
+    global moving_active, move_target_color
+    moving_active = False
+    move_target_color = None
     send_local_ned_velocity(0, 0, 0)
-    print(f"[MOVE] Completed {direction} movement")
-def rc_move(direction, duration, strength=40):
-    """
-    direction: 'forward', 'backward', 'left', 'right'
-    duration : gi�y
-    strength : 20~80 (indoor n�n <=50)
-    """
+    print("[MOVE] Stopped movement")
 
-    NEUTRAL = 1500
-    pwm = NEUTRAL + strength
+def update_moving():
+    """Cập nhật trạng thái di chuyển - gọi mỗi frame"""
+    global moving_active
+    
+    if not moving_active:
+        return False
+    
+    vx, vy = 0, 0
+    if moving_direction.lower() == 'forward':
+        vx = moving_speed
+    elif moving_direction.lower() == 'backward':
+        vx = -moving_speed
+    elif moving_direction.lower() == 'left':
+        vy = -moving_speed
+    elif moving_direction.lower() == 'right':
+        vy = moving_speed
+    
+    # Gửi lệnh vận tốc
+    send_local_ned_velocity(vx, vy, 0)
+    return True
 
-    rc = {
-        '1': NEUTRAL,  # roll
-        '2': NEUTRAL,  # pitch
-        '4': NEUTRAL   # yaw gi? th?ng
-    }
-
-    if direction == "forward":
-        rc['2'] = NEUTRAL + strength
-    elif direction == "backward":
-        rc['2'] = NEUTRAL - strength
-    elif direction == "right":
-        rc['1'] = NEUTRAL + strength
-    elif direction == "left":
-        rc['1'] = NEUTRAL - strength
-    else:
-        print("[RC] Unknown direction")
-        return
-
-    print(f"[RC] {direction.upper()} {duration}s | PWM offset �{strength}")
-
-    end_time = time.time() + duration
-    while time.time() < end_time:
-        vehicle.channels.overrides = rc
-        time.sleep(0.05)
-
-    # STOP
-    vehicle.channels.overrides = {
-        '1': NEUTRAL,
-        '2': NEUTRAL,
-        '4': NEUTRAL
-    }
-
-    print("[RC] STOP")
-def rc_release():
-    vehicle.channels.overrides = {}
-    print("[RC] RELEASE CONTROL")
+def move_with_vision_check(direction, duration, speed=0.5, target_color=None):
+    """Di chuyển với kiểm tra vision - đã được tích hợp vào state machine"""
+    # Không cần hàm này nữa, đã tích hợp vào state machine
+    pass
 
 def control_drone_to_center(error_x, error_y):
     """Điều khiển drone về tâm circle"""
@@ -258,9 +231,10 @@ def is_in_target_zone(error_x, error_y):
 
 def reset_mission_state():
     """Reset trạng thái mission"""
-    global hold_start_time, in_target_zone
+    global hold_start_time, in_target_zone, moving_active
     hold_start_time = 0
     in_target_zone = False
+    moving_active = False
     PID_X.reset()
     PID_Y.reset()
 
@@ -273,19 +247,41 @@ def run_servo(sig):
 
 # ================= MISSION STATE MACHINE =================
 def mission_state_machine(error_x, error_y, detected_color, frame=None):
-    global servo_triggered
+    global servo_triggered, moving_active, move_target_color
     """State machine điều khiển mission"""
     global mission_step, hold_start_time, in_target_zone
     
     print(f"[STATE {mission_step}] Color: {detected_color}, Error: ({error_x:.1f}, {error_y:.1f})")
     
+    # Kiểm tra nếu đang di chuyển và phát hiện màu sắc mục tiêu
+    if moving_active and move_target_color is not None:
+        if detected_color == move_target_color:
+            print(f"[MOVE] Detected {move_target_color} while moving, stopping early!")
+            stop_moving()
+            # Chuyển sang mission step tương ứng
+            if mission_step == 0 and move_target_color == "YELLOW":
+                mission_step = 1
+                reset_mission_state()
+            elif mission_step == 2 and move_target_color == "YELLOW":
+                mission_step = 3
+                reset_mission_state()
+            elif mission_step == 4 and move_target_color == "RED":
+                mission_step = 5
+                reset_mission_state()
+    
     # Mission Step 0: Takeoff và di chuyển forward
     if mission_step == 0:
-
-        mission_step = 1
-
-        reset_mission_state()
-        return "MOVING"
+        if not moving_active:
+            # Bắt đầu di chuyển với khả năng dừng sớm khi thấy YELLOW
+            start_moving("forward", 0.5, "YELLOW")
+        
+        # Cập nhật di chuyển
+        if update_moving():
+            return "MOVING"
+        else:
+            mission_step = 1
+            reset_mission_state()
+            return "CENTERING"
     
     # Mission Step 1: Detect Yellow circle đầu tiên
     elif mission_step == 1:
@@ -325,30 +321,149 @@ def mission_state_machine(error_x, error_y, detected_color, frame=None):
             
             # Khi đang trong target zone, vẫn điều khiển nhẹ để giữ vị trí
             if abs(error_x) > 5 or abs(error_y) > 5:
-                # control_drone_to_center(error_x, error_y)
-                print("control center")
+                control_drone_to_center(error_x, error_y)
             else:
                 send_local_ned_velocity(0, 0, 0)
         else:
             in_target_zone = False
             hold_start_time = 0
             # Điều khiển drone về tâm
-            # control_drone_to_center(error_x, error_y)
+            control_drone_to_center(error_x, error_y)
         
         return "CENTERING"
+    
+    # Mission Step 2: Di chuyển forward 6m (có thể dừng sớm nếu thấy YELLOW)
     elif mission_step == 2:
-        move_with_timer("forward", 4, 0.5)
-        print("MOVE forward 2 meter")
-        send_local_ned_velocity(0, 0, 0)
-        time.sleep(1)
+        if not moving_active:
+            # Bắt đầu di chuyển với khả năng dừng sớm khi thấy YELLOW
+            start_moving("forward", 0.5, "YELLOW")
+        
+        # Cập nhật di chuyển
+        if update_moving():
+            return "MOVING"
+        else:
+            # Đã dừng di chuyển (hoàn thành hoặc dừng sớm)
+            mission_step = 3
+            reset_mission_state()
+            return "CENTERING"
+    
+    # Mission Step 3: Detect Yellow circle thứ hai
+    elif mission_step == 3:
+        if detected_color != "YELLOW":
+            print(f"[WAIT] Waiting for YELLOW, detected: {detected_color}")
+            send_local_ned_velocity(0, 0, 0)
+            return "WAITING"
+        
+        # Kiểm tra nếu đã ở trong target zone
+        if is_in_target_zone(error_x, error_y):
+            if not in_target_zone:
+                in_target_zone = True
+                hold_start_time = time.time()
+                print(f"[HOLD] Starting hold timer for Yellow 2")
+            else:
+                elapsed = time.time() - hold_start_time
+                if frame is not None:
+                    h, w = frame.shape[:2]
+                    cv2.putText(frame, f"Hold Yellow 1: {elapsed:.1f}/{HOLD_TIME}s", 
+                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    
+                    # Vẽ vòng tròn target zone
+                    cv2.circle(frame, (w//2, h//2), ERROR_THRESH, (0, 255, 0), 80)
+
+                
+                print(f"[HOLD] Yellow 2: {elapsed:.1f}s/{HOLD_TIME}s")
+                if elapsed >= 2 and not servo_triggered:
+                    run_servo(1)
+                    servo_triggered = True
+                    print("[ACTION] Drop mechanism triggered Ball 2")
+                if elapsed >= HOLD_TIME:
+                    print("[MISSION] Yellow 2 detected for 2s. Moving left 6m")
+                    mission_step = 4
+                    reset_mission_state()
+                    return "MOVING"
+            
+            # Khi đang trong target zone, vẫn điều khiển nhẹ
+            if abs(error_x) > 5 or abs(error_y) > 5:
+                control_drone_to_center(error_x, error_y)
+            else:
+                send_local_ned_velocity(0, 0, 0)
+        else:
+            in_target_zone = False
+            hold_start_time = 0
+            control_drone_to_center(error_x, error_y)
+        
+        return "CENTERING"
+    
+    # Mission Step 4: Di chuyển left 6m (có thể dừng sớm nếu thấy RED)
+    elif mission_step == 4:
+        if not moving_active:
+            # Bắt đầu di chuyển với khả năng dừng sớm khi thấy RED
+            start_moving("left", 0.5, "RED")
+        
+        # Cập nhật di chuyển
+        if update_moving():
+            return "MOVING"
+        else:
+            # Đã dừng di chuyển (hoàn thành hoặc dừng sớm)
+            mission_step = 5
+            reset_mission_state()
+            servo_triggered = False
+            return "CENTERING"
+    
+    # Mission Step 5: Detect Red circle
+    elif mission_step == 5:
+        if detected_color != "RED":
+            print(f"[WAIT] Waiting for RED, detected: {detected_color}")
+            send_local_ned_velocity(0, 0, 0)
+            return "WAITING"
+        
+        # Kiểm tra nếu đã ở trong target zone
+        if is_in_target_zone(error_x, error_y):
+            if not in_target_zone:
+                in_target_zone = True
+                hold_start_time = time.time()
+                print(f"[HOLD] Starting hold timer for Red")
+            else:
+                elapsed = time.time() - hold_start_time
+                if frame is not None:
+                    h, w = frame.shape[:2]
+                    cv2.putText(frame, f"Hold Yellow 1: {elapsed:.1f}/{HOLD_TIME}s", 
+                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    
+                    # Vẽ vòng tròn target zone
+                    cv2.circle(frame, (w//2, h//2), ERROR_THRESH, (0, 255, 0), 80)
+
+                print(f"[HOLD] Red: {elapsed:.1f}s/{HOLD_TIME}s")
+
+                if elapsed >= 2 and not servo_triggered:
+                    run_servo(1)
+                    servo_triggered = True
+                    print("[ACTION] Drop mechanism triggered Ball 3")
+                if elapsed >= HOLD_TIME:
+                    print("[MISSION] Red detected for 2s. Mission completed!")
+                    mission_step = 6
+                    return "COMPLETED"
+            
+            # Khi đang trong target zone, vẫn điều khiển nhẹ
+            if abs(error_x) > 5 or abs(error_y) > 5:
+                control_drone_to_center(error_x, error_y)
+            else:
+                send_local_ned_velocity(0, 0, 0)
+        else:
+            in_target_zone = False
+            hold_start_time = 0
+            control_drone_to_center(error_x, error_y)
+        
+        return "CENTERING"
+    
+    # Mission Step 6: Mission hoàn thành
+    elif mission_step == 6:
+        print("[MISSION] All tasks completed. Landing...")
         land()
-        print("LANDED....")
-        reset_mission_state()
         return "COMPLETED"
     
     return "UNKNOWN"
-    
-    
+
 # ================= MISSION CLASS =================
 class Mission:
     def __init__(self):
@@ -411,9 +526,14 @@ class Mission:
         # Vẽ mission state
         cv2.putText(frame, f"Mission Step: {mission_step}", (10, 150),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Vẽ trạng thái di chuyển
+        if moving_active:
+            cv2.putText(frame, f"MOVING {moving_direction}", (10, 200),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
     def run(self):
-        global mission_step
+        global mission_step, moving_active
         
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -431,11 +551,11 @@ class Mission:
                 time.sleep(0.1)
                 continue
             
-            # # Kiểm tra timeout vision
-            # if time.time() - self.last_detect_time > VISION_TIMEOUT and mission_step > 0:
-            #     print("[WARN] Vision timeout -> LAND")
-            #     land()
-            #     break
+            # Kiểm tra timeout vision
+            if time.time() - self.last_detect_time > VISION_TIMEOUT and mission_step > 0:
+                print("[WARN] Vision timeout -> LAND")
+                land()
+                break
             
             # Phát hiện vật thể
             bbox = self.detector.detect_best(frame)
@@ -544,9 +664,6 @@ if __name__ == "__main__":
     try:
         vehicle = connect('/dev/ttyACM0', wait_ready=True, baud=115200)
         print("Connect successfully /dev/ttyACM0")
-        # vehicle.parameters['EK3_ENABLE'] = 1
-        vehicle.parameters['LAND_SPEED'] = 20
-        print("[INFO] Enabled EKF3")
     except Exception as e:
         print(f"[ERROR] Cannot connect to vehicle: {e}")
         print("[INFO] Running in simulation mode (no vehicle connection)")
@@ -555,25 +672,16 @@ if __name__ == "__main__":
     try:
         print("[MISSION] Starting Mission")
         print("[MISSION] Step 0: Taking off and moving forward 6.5m")
-        arm_and_takeoff(TARGET_ALT)
-        time.sleep(1)
-        # test th?c t? tru?c
-        # rc_move("forward", duration=8, strength=5)
-        # land()
+        # arm_and_takeoff(TARGET_ALT)
+        # time.sleep(2)
 
         # xoay_compass(TARGET_COMPASS_HEADING)
         # time.sleep(1)
-        move_with_timer("backward", 6, 0.5)
+
+        # Bắt đầu mission từ step 0 (di chuyển forward có thể dừng sớm)
+        mission = Mission()
+        mission.run()
         land()
-        # print("[MISSION] Reached Step 1 Move Forward")
-        # move_with_timer("backward", 5, 0.5)
-        # print("[MISSION] Reached Step 2 Move Left")
-
-
-        # mission = Mission()
-        # mission.run()
-
-        
     except KeyboardInterrupt:
         print("\n[INFO] Mission interrupted by user")
     except Exception as e:
